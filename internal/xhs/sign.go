@@ -4,6 +4,7 @@ package xhs
 import (
 	"context"
 	"errors"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -122,10 +123,30 @@ func (s *Signer) Sign(ctx context.Context, params SignParams) (*SignResult, erro
 		return nil, errors.New("页面未初始化")
 	}
 	slog.Info("执行签名 JS", "uri", params.URI)
-	// 执行 window._webmsxyw 生成签名
-	res, err := s.page.Evaluate(`([url, data]) => window._webmsxyw(url, data)`, []any{params.URI, params.Data})
+
+	// 1. 检查 window._webmsxyw 是否存在
+	exists, err := s.page.Evaluate("() => typeof window._webmsxyw === 'function'", nil)
 	if err != nil {
-		slog.Error("执行签名 JS 失败", "err", err, "uri", params.URI)
+		slog.Error("检查 window._webmsxyw 失败", "err", err)
+		return nil, fmt.Errorf("检查 window._webmsxyw 失败: %w", err)
+	}
+	if exists != true {
+		slog.Error("window._webmsxyw 未定义或未注入签名 JS")
+		return nil, errors.New("window._webmsxyw 未定义或未注入签名 JS")
+	}
+
+	// 2. data 参数序列化为 JSON 字符串
+	dataJSON, err := json.Marshal(params.Data)
+	if err != nil {
+		slog.Error("data 参数序列化失败", "err", err, "data", params.Data)
+		return nil, fmt.Errorf("data 参数序列化失败: %w", err)
+	}
+
+	// 3. JS 端用 JSON.parse 还原 data
+	js := `([url, dataStr]) => window._webmsxyw(url, JSON.parse(dataStr))`
+	res, err := s.page.Evaluate(js, []any{params.URI, string(dataJSON)})
+	if err != nil {
+		slog.Error("执行签名 JS 失败", "err", err, "uri", params.URI, "data", string(dataJSON))
 		return nil, fmt.Errorf("执行签名 JS 失败: %w", err)
 	}
 	m, ok := res.(map[string]any)
